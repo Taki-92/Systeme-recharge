@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "793956117361",
+    "project_id": "newton-charge",
+    "storage_bucket": "newton-charge.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:793956117361:android:0f41c2585fd908e696e4d0",
+        "android_client_info": {
+          "package_name": "com.cielnewton.newtoncharge"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAytnzH-Z2Sa53O49q1ixHJIOktS0gJO4E"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
