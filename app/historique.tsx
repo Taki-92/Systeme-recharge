@@ -1,45 +1,48 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useState } from 'react';
-import { ActivityIndicator, FlatList, StyleSheet, Text, TouchableOpacity, View, Alert } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
-import api from '../services/api'; 
-
-// On met à jour l'interface pour correspondre aux données de la route "transactions"
-interface TransactionHistory {
-  id: string | number;
-  created_at: string;
-  type: string;
-  amount: string | number;
-  description: string;
-}
+// On importe notre nouvelle couche Service
+import { ConsumptionService, TransactionHistory } from '../services/consumptionService';
 
 export default function HistoriqueScreen() {
   const router = useRouter();
   const [transactions, setTransactions] = useState<TransactionHistory[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
+  // NOTRE RÈGLE D'OR ABSOLUE
   useFocusEffect(
     useCallback(() => {
+      let ignore = false;
+
       const fetchHistory = async () => {
-        setIsLoading(true);
         try {
-          // On appelle la route globale qui contient tout
-          const response = await api.get('/api/consumption/transactions');
+          if (!ignore) setIsLoading(true);
           
-          // L'INVERSE D'AVANT : On ne garde QUE les paiements (les dépenses électriques)
-          const onlyConsumptions = response.data.filter((item: any) => item.type === 'payment');
+          // L'appel devient propre, abstrait et strictement typé
+          const onlyConsumptions = await ConsumptionService.getConsumptions();
           
-          setTransactions(onlyConsumptions);
-        } catch (error: any) {
-          console.error("[Historique] Fetch error:", error?.response?.data || error.message);
-          Alert.alert("Erreur", "Impossible de charger l'historique de consommation.");
+          if (!ignore) {
+            setTransactions(onlyConsumptions);
+          }
+        } catch (error: unknown) { // Finis les catch (error: any)
+          if (!ignore) {
+            console.error("[Historique] Fetch error:", error);
+            Alert.alert("Erreur", "Impossible de charger l'historique de consommation.");
+          }
         } finally {
-          setIsLoading(false);
+          if (!ignore) {
+            setIsLoading(false);
+          }
         }
       };
 
       fetchHistory();
+
+      return () => {
+        ignore = true; // Empêche le memory leak si l'utilisateur quitte la page
+      };
     }, [])
   );
 
@@ -62,9 +65,9 @@ export default function HistoriqueScreen() {
         <Text style={styles.plugText}>Session de Charge</Text>
       </View>
       <View style={styles.statsRow}>
-        {/* On affiche la description qui contient "Charge sur Prise3 (0.038 kWh)" */}
         <Text style={styles.descriptionText}>{item.description}</Text>
-        <Text style={styles.valueText}>{item.amount} €</Text>
+        {/* On force la conversion en string avant parseFloat pour la sécurité */}
+        <Text style={styles.valueText}>{parseFloat(item.amount.toString()).toFixed(2)} €</Text>
       </View>
     </View>
   );

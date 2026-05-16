@@ -1,144 +1,106 @@
 import { Ionicons } from '@expo/vector-icons';
+import axios from 'axios';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Modal, StyleSheet, Text, TouchableOpacity, useColorScheme, View } from 'react-native';
+import { ActivityIndicator, Alert, StyleSheet, Text, TouchableOpacity, useColorScheme, View } from 'react-native';
 import Toast from 'react-native-toast-message';
-import { io, Socket } from 'socket.io-client';
 
-import api from '../services/api';
+// Architecture : Services, Store et Styles
+import { SessionService } from '../services/SessionService';
+import { UserService } from '../services/userService';
+import { UserState, useUserStore } from '../store/useUserStore';
 import { styles } from '../styles/activation.styles';
-
-interface UserProfile {
-  id: string;
-}
-
-interface LiveConsumptionData {
-  userId: string | number;
-  plugId: string | number;
-  cost?: number;
-  energyWh?: number;
-  reason?: string;
-}
-
-interface PowerUpdateData {
-  plugId: string | number;
-  power?: number;
-}
-
-interface VoltageUpdateData {
-  plugId: string | number;
-  voltage?: number;
-}
 
 export default function ActivationScreen() {
   const router = useRouter();
-  const { plugId, active, cost, energy, power: initialPower } = useLocalSearchParams();
+  const { plugId, cost, energy, power: initialPower } = useLocalSearchParams<{ plugId: string, cost: string, energy: string, power: string }>();
 
+  // Store Zustand global
+  const userId = useUserStore((state: UserState) => state.userId);
+  const setUserId = useUserStore((state: UserState) => state.setUserId);
+  const activeSessions = useUserStore((state: UserState) => state.activeSessions);
+  const addSession = useUserStore((state: UserState) => state.addSession);
+  const removeSession = useUserStore((state: UserState) => state.removeSession);
+
+  // État local déduit du Store
+  const isCharging = !!activeSessions[plugId];
+
+  // States UI & Live Data
   const [isLoading, setIsLoading] = useState(false);
-  const [isCharging, setIsCharging] = useState(active === 'true');
-  const [userId, setUserId] = useState<string | null>(null);
   const [liveCost, setLiveCost] = useState(cost ? String(cost) : '0.00');
   const [liveEnergy, setLiveEnergy] = useState(energy ? String(energy) : '0');
   const [power, setPower] = useState(initialPower ? String(initialPower) : '0');
   const [voltage, setVoltage] = useState('0');
-  
   const [isAdminStopModalVisible, setIsAdminStopModalVisible] = useState(false);
-  const [stopReason, setStopReason] = useState<string>('stop');
+
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
 
+  /**
+   * RÈGLE D'OR 1 : Initialisation du profil utilisateur
+   */
   useEffect(() => {
-    const initUser = async () => {
+    let ignore = false;
+    
+    async function initUser() {
       try {
-        const response = await api.get<UserProfile>('/api/auth/profile');
-        const id = response.data?.id;
-        if (id) {
-          setUserId(id);
-        } else {
-          throw new Error("ID utilisateur non trouvé");
+        const profile = await UserService.getProfile();
+        if (!ignore && profile?.id) {
+          setUserId(profile.id);
         }
       } catch (e) {
-        console.error("[Activation] Erreur critique profil:", e);
-        Alert.alert(
-          "Erreur d'authentification",
-          "Impossible de vérifier votre identité. Veuillez réessayer.",
-          [{ text: "OK", onPress: () => router.back() }]
-        );
+        if (!ignore) {
+          console.error("[Activation] Erreur profil:", e);
+        }
       }
-    };
-    initUser();
-  }, [router]);
+    }
+    
+    if (!userId) initUser();
+    
+    return () => { ignore = true; };
+  }, [setUserId]); // <-- Loi 3 : Tableau verrouillé pour interdire la boucle
 
+  /**
+   * RÈGLE D'OR 2 : Vérification du statut de la borne (Prévention amnésie)
+   */
   useEffect(() => {
-    if (!userId || !isCharging) return;
-
-    const baseURL = process.env.EXPO_PUBLIC_API_URL || 'https://recharge.cielnewton.fr';
-    const socket: Socket = io(baseURL, {
-      path: "/api/socket.io",
-      transports: ['websocket']
-    });
-
-    socket.on('live_consumption', (data: LiveConsumptionData) => {
-      if (String(data.userId) === String(userId) && String(data.plugId) === String(plugId)) {
-        if (data.cost !== undefined) setLiveCost(String(data.cost));
-        if (data.energyWh !== undefined) setLiveEnergy(String(data.energyWh));
+    let ignore = false;
+    
+    async function checkStatus() {
+      try {
+        const statusData = await SessionService.getPlugStatus(plugId);
+        if (!ignore && statusData?.isActive) {
+          addSession(plugId, statusData.sessionDetails || {});
+        }
+      } catch (e: any) {
+        if (!ignore && e.response?.status !== 404) {
+          console.warn("[Activation] Statut borne indisponible");
+        }
       }
-    });
+    }
+    
+    checkStatus();
+    
+    return () => { ignore = true; };
+  }, [plugId, addSession]);
 
-    socket.on('power_update', (data: PowerUpdateData) => {
-      if (String(data.plugId) === String(plugId) && data.power !== undefined) {
-        setPower(String(data.power));
-      }
-    });
-
-    socket.on('voltage_update', (data: VoltageUpdateData) => {
-      if (String(data.plugId) === String(plugId) && data.voltage !== undefined) {
-        setVoltage(String(data.voltage));
-      }
-    });
-
-    socket.on('session_auto_stopped', (data: LiveConsumptionData) => {
-      if (String(data.userId) === String(userId) && String(data.plugId) === String(plugId)) {
-        setIsCharging(false);
-        setStopReason(data.reason || 'stop');
-        setIsAdminStopModalVisible(true);
-      }
-    });
-
-    return () => {
-      socket.disconnect();
-    };
-  }, [userId, isCharging, plugId, router]);
-
+  // Gestion des erreurs centralisée
   const handleError = (error: any, defaultMessage: string) => {
     let errorMessage = defaultMessage;
-    if (error?.response?.data?.error) {
+    if (axios.isAxiosError(error) && error.response?.data?.error) {
       errorMessage = error.response.data.error;
     }
-
-    if (typeof errorMessage === 'string' && errorMessage.toLowerCase().includes('solde insuffisant')) {
-      Alert.alert(
-        "Solde Insuffisant",
-        "Votre solde est inférieur à 1€. Voulez-vous recharger votre compte maintenant ?",
-        [
-          { text: "Annuler", style: "cancel" },
-          { text: "Recharger", onPress: () => router.push('/recharge'), style: "default" }
-        ]
-      );
-    } else {
-      Toast.show({
-        type: 'error',
-        text1: 'Erreur',
-        text2: errorMessage,
-      });
-    }
+    Toast.show({ type: 'error', text1: 'Erreur', text2: errorMessage });
   };
 
+  /**
+   * LOGIQUE MÉTIER : Démarrer la charge
+   */
   const startCharging = async () => {
     setIsLoading(true);
     try {
-      await api.post('/api/plugs/start', { plugId });
-      setIsCharging(true);
+      await SessionService.startCharging(plugId);
+      addSession(plugId, { startTime: Date.now() });
       setLiveCost('0.00');
       setLiveEnergy('0');
       setPower('0');
@@ -150,42 +112,43 @@ export default function ActivationScreen() {
     }
   };
 
+  /**
+   * LOGIQUE MÉTIER : Arrêter la charge
+   */
   const stopCharging = async () => {
     setIsLoading(true);
     try {
-      const response = await api.post('/api/plugs/stop', { plugId });
+      const data = await SessionService.stopCharging(plugId);
+      const rawCost = data?.cost || "0";
+      const rawBalance = data?.newBalance || "0";
+
+      const finalCost = parseFloat(String(rawCost).replace('€', '').trim()) || 0;
+      const finalBalance = parseFloat(String(rawBalance).replace('€', '').trim()) || 0;
+
+      removeSession(plugId);
       
-      console.log("✅ Réponse serveur Stop:", response.data);
-
-      // On récupère les valeurs brutes envoyées par le serveur ("0.0296€")
-      const rawCost = response.data?.cost || "0";
-      const rawBalance = response.data?.newBalance || "0";
-
-      // On retire le "€", les espaces, et on transforme en nombre décimal
-      const finalCost = parseFloat(String(rawCost).replace('€', '').trim());
-      const finalBalance = parseFloat(String(rawBalance).replace('€', '').trim());
-
-      setIsCharging(false);
       Alert.alert(
         "Charge terminée",
         `Coût : ${finalCost.toFixed(2)} €\nNouveau solde : ${finalBalance.toFixed(2)} €`,
-        [{ 
-          text: "OK", 
-          onPress: () => router.navigate({ pathname: '/acceuil', params: { stoppedPlugId: plugId } }) 
-        }]
+        [{ text: "OK", onPress: () => router.replace('/acceuil') }]
       );
     } catch (error: any) {
-      console.error("🚨 Erreur lors du Stop:", error?.response?.data || error.message);
-      
-      if (error?.response?.status === 400 || error?.response?.status === 404) {
-          setIsCharging(false);
-        router.navigate({ pathname: '/acceuil', params: { stoppedPlugId: plugId } });
+      if (error.response?.status === 400 || error.response?.status === 404) {
+        removeSession(plugId);
+        router.replace('/acceuil');
       } else {
-          handleError(error, "Impossible d'arrêter la charge.");
+        handleError(error, "Erreur lors de l'arrêt.");
       }
     } finally {
       setIsLoading(false);
     }
+  };
+
+  /**
+   * NAVIGATION SÉCURISÉE : Fermer l'écran sans relancer le scanner
+   */
+  const handleClose = () => {
+    router.replace('/acceuil'); 
   };
 
   return (
@@ -194,8 +157,13 @@ export default function ActivationScreen() {
         <Text style={styles.title}>{isCharging ? "Charge en cours" : "Borne détectée"}</Text>
         <Text style={styles.plugId}>#{plugId}</Text>
 
-        <TouchableOpacity style={styles.closeButton} onPress={() => router.navigate('/acceuil')}>
-          <Ionicons name="close" size={32} color="white" />
+        {/* Bouton de fermeture sécurisé avec hitSlop élargi */}
+        <TouchableOpacity 
+          style={styles.closeButton} 
+          onPress={handleClose}
+          hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
+        >
+          <Ionicons name="close-circle" size={35} color={isDark ? "white" : "#333"} />
         </TouchableOpacity>
 
         {isLoading ? (
@@ -208,34 +176,18 @@ export default function ActivationScreen() {
             <Ionicons name="flash" size={60} color="#4CAF50" />
             <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#4CAF50' }}>Charge active</Text>
 
-            <View style={{ width: '100%', backgroundColor: '#F5F7FA', borderRadius: 12, padding: 15, marginVertical: 10 }}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-around', marginBottom: 15 }}>
-                <View style={{ alignItems: 'center' }}>
-                  <Ionicons name="cash-outline" size={24} color="#8A2BE2" />
-                  <Text style={{ fontSize: 12, color: '#666', marginTop: 5 }}>Coût</Text>
-                  <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#333' }}>{Number(liveCost).toFixed(2)} €</Text>
-                </View>
-                <View style={{ alignItems: 'center' }}>
-                  <Ionicons name="battery-charging-outline" size={24} color="#8A2BE2" />
-                  <Text style={{ fontSize: 12, color: '#666', marginTop: 5 }}>Énergie</Text>
-                  <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#333' }}>{Number(liveEnergy).toFixed(1)} Wh</Text>
-                </View>
-              </View>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-around' }}>
-                <View style={{ alignItems: 'center' }}>
-                  <Ionicons name="flash-outline" size={24} color="#e67e22" />
-                  <Text style={{ fontSize: 12, color: '#666', marginTop: 5 }}>Puissance</Text>
-                  <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#333' }}>{power} W</Text>
-                </View>
-                <View style={{ alignItems: 'center' }}>
-                  <Ionicons name="speedometer-outline" size={24} color="#3498db" />
-                  <Text style={{ fontSize: 12, color: '#666', marginTop: 5 }}>Tension</Text>
-                  <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#333' }}>{voltage} V</Text>
-                </View>
-              </View>
+            <View style={dashboardStyle.statsGrid}>
+               <StatItem label="Coût" value={`${Number(liveCost).toFixed(2)} €`} icon="cash-outline" />
+               <StatItem label="Énergie" value={`${Number(liveEnergy).toFixed(1)} Wh`} icon="battery-charging-outline" />
+               <StatItem label="Puissance" value={`${power} W`} icon="flash-outline" color="#e67e22" />
+               <StatItem label="Tension" value={`${voltage} V`} icon="speedometer-outline" color="#3498db" />
             </View>
 
-            <TouchableOpacity style={[styles.activateButton, { backgroundColor: '#D32F2F', width: '100%' }]} onPress={stopCharging}>
+            <TouchableOpacity 
+              style={[styles.activateButton, { backgroundColor: '#D32F2F', width: '100%' }]} 
+              onPress={stopCharging}
+              disabled={isLoading}
+            >
               <Text style={styles.activateButtonText}>Clôturer la session</Text>
             </TouchableOpacity>
           </View>
@@ -244,50 +196,40 @@ export default function ActivationScreen() {
             <View style={styles.infoContainer}>
               <Text style={styles.description}>Voulez-vous activer cette borne ?</Text>
             </View>
-            <TouchableOpacity style={styles.activateButton} onPress={startCharging}>
+            <TouchableOpacity 
+              style={styles.activateButton} 
+              onPress={startCharging}
+              disabled={isLoading}
+            >
               <Text style={styles.activateButtonText}>Démarrer la charge</Text>
             </TouchableOpacity>
           </View>
         )}
       </View>
-
-      {/* Modal Personnalisé pour la clôture admin */}
-      <Modal visible={isAdminStopModalVisible} transparent animationType="fade">
-        <View style={modalStyles.overlay}>
-          <View style={[modalStyles.content, isDark && modalStyles.darkContent]}>
-            <Ionicons name="information-circle-outline" size={50} color="#8A2BE2" />
-            <Text style={[modalStyles.title, isDark && modalStyles.darkText]}>
-              {stopReason === 'maintenance' ? "Borne en Maintenance" : "Session terminée"}
-            </Text>
-            <Text style={[modalStyles.message, isDark && modalStyles.darkTextSecondary]}>
-              {stopReason === 'maintenance' 
-                ? "Cette prise vient d'être placée en maintenance par nos équipes. Votre session a été interrompue en toute sécurité." 
-                : "La session de charge a été clôturée par un administrateur."}
-            </Text>
-            <TouchableOpacity 
-              style={modalStyles.button} 
-              onPress={() => {
-                setIsAdminStopModalVisible(false);
-                router.navigate({ pathname: '/acceuil', params: { stoppedPlugId: plugId } });
-              }}
-            >
-              <Text style={modalStyles.buttonText}>OK</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
     </View>
   );
 }
 
-const modalStyles = StyleSheet.create({
-  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 },
-  content: { backgroundColor: 'white', borderRadius: 20, padding: 25, width: '100%', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 10, elevation: 5 },
-  darkContent: { backgroundColor: '#1E1E1E' },
-  title: { fontSize: 20, fontWeight: 'bold', color: '#1A1A1A', marginTop: 15, marginBottom: 10 },
-  message: { fontSize: 16, color: '#666', textAlign: 'center', marginBottom: 25 },
-  darkText: { color: '#FFFFFF' },
-  darkTextSecondary: { color: '#AAAAAA' },
-  button: { backgroundColor: '#8A2BE2', paddingVertical: 12, paddingHorizontal: 40, borderRadius: 10, width: '100%', alignItems: 'center' },
-  buttonText: { color: 'white', fontSize: 16, fontWeight: 'bold' }
+// Sous-composant UI
+function StatItem({ label, value, icon, color = "#8A2BE2" }: any) {
+  return (
+    <View style={{ alignItems: 'center', width: '45%', marginVertical: 10 }}>
+      <Ionicons name={icon} size={24} color={color} />
+      <Text style={{ fontSize: 11, color: '#666', marginTop: 4 }}>{label}</Text>
+      <Text style={{ fontSize: 15, fontWeight: 'bold', color: '#333' }}>{value}</Text>
+    </View>
+  );
+}
+
+// Styles internes ajoutés
+const dashboardStyle = StyleSheet.create({
+  statsGrid: { 
+    width: '100%', 
+    backgroundColor: '#F5F7FA', 
+    borderRadius: 12, 
+    padding: 10, 
+    flexDirection: 'row', 
+    flexWrap: 'wrap', 
+    justifyContent: 'space-around' 
+  }
 });

@@ -3,35 +3,44 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useState } from 'react';
 import { ActivityIndicator, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
-// On utilise ton instance API configurée
-import api from '../services/api';
+// On importe le service pour respecter l'architecture
+import { Transaction, TransactionService } from '../services/transactionService';
 
 export default function TransactionsScreen() {
   const router = useRouter();
-  const [transactions, setTransactions] = useState([]);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useFocusEffect(
     useCallback(() => {
-      const fetchTransactions = async () => {
-        setIsLoading(true);
+      let ignore = false;
+
+      async function fetchTransactions() {
         try {
-          // L'appel API via ton instance (qui gère déjà le token et la baseURL)
-          const responseTrans = await api.get('/api/consumption/transactions');
+          // On s'assure que le loading est à true au début du fetch
+          if (!ignore) setIsLoading(true);
+
+          const topUps = await TransactionService.getTopUps();
           
-          // LE FILTRE MAGIQUE EST ICI :
-          // On ne garde que les transactions d'ajout de fonds (Stripe/PayPal)
-          const onlyTopUps = responseTrans.data.filter((item: any) => item.type === 'recharge');
-          
-          setTransactions(onlyTopUps);
-        } catch (error) {
-          console.error("Erreur lors du chargement des transactions :", error);
+          if (!ignore) {
+            setTransactions(topUps);
+          }
+        } catch (error: unknown) {
+          if (!ignore) {
+            console.error("Erreur lors du chargement des transactions :", error);
+          }
         } finally {
-          setIsLoading(false);
+          if (!ignore) {
+            setIsLoading(false);
+          }
         }
-      };
+      }
 
       fetchTransactions();
+
+      return () => {
+        ignore = true;
+      };
     }, [])
   );
 
@@ -47,22 +56,21 @@ export default function TransactionsScreen() {
     });
   };
 
-  const renderItem = ({ item }: { item: any }) => {
-    const amountValue = parseFloat(item.amount);
+  const renderItem = ({ item }: { item: Transaction }) => {
+    const amountValue = parseFloat(item.amount.toString());
 
     return (
       <View style={styles.card}>
         <View style={styles.headerRow}>
           <Text style={styles.dateText}>{formatDate(item.created_at)}</Text>
-          {/* Comme on a filtré, ce sera toujours un rechargement */}
           <Text style={[styles.typeText, { color: '#4CAF50' }]}>
             Rechargement
           </Text>
         </View>
         <View style={styles.statsRow}>
-          <Text style={styles.infoText}>{item.description}</Text>
+          <Text style={styles.infoText}>{item.description?.split('(cs')[0]}</Text>
           <Text style={[styles.valueText, { color: '#4CAF50' }]}>
-            {amountValue > 0 ? '+' : ''}{item.amount} €
+            {amountValue > 0 ? '+' : ''}{amountValue.toFixed(2)} €
           </Text>
         </View>
       </View>

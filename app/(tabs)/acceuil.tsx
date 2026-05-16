@@ -1,15 +1,15 @@
 import { Ionicons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
 import * as Notifications from 'expo-notifications';
-import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Modal, Platform, StyleSheet, Text, TouchableOpacity, View, useColorScheme } from 'react-native';
 import Toast from 'react-native-toast-message';
-import { io } from 'socket.io-client';
 
-// On utilise uniquement l'instance centralisée API
-import api from '../../services/api';
+// L'architecture propre : Services et Store
+import { UserService } from '../../services/userService';
+import { UserState, useUserStore } from '../../store/useUserStore';
 import { styles } from '../../styles/acceuil.styles';
 
 Notifications.setNotificationHandler({
@@ -24,148 +24,105 @@ Notifications.setNotificationHandler({
 
 export default function AccueilScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams();
-  const [solde, setSolde] = useState(0);
-  const [userId, setUserId] = useState<string | null>(null);
-  const [isCheckingToken, setIsCheckingToken] = useState(true);
-  const [isMenuVisible, setIsMenuVisible] = useState(false);
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
-  const [activeSessions, setActiveSessions] = useState<Record<string, any>>({});
+
+  // 1. État local purement UI
+  const [solde, setSolde] = useState(0);
+  const [isCheckingToken, setIsCheckingToken] = useState(true);
+  const [isMenuVisible, setIsMenuVisible] = useState(false);
+
+  // 2. État global récupéré de Zustand (Synchronisé via le _layout)
+  const userId = useUserStore((state: UserState) => state.userId);
+  const setUserId = useUserStore((state: UserState) => state.setUserId);
+  const activeSessions = useUserStore((state: UserState) => state.activeSessions);
 
   /**
-   * RECUPERATION DU SOLDE
-   * Utilise l'instance 'api' qui injecte automatiquement le JWT
-   */
-  const fetchSolde = async () => {
-    try {
-      const response = await api.get('/api/auth/profile');
-      const id = response.data?.id || response.data?.user?.id;
-      if (id) setUserId(id);
-      
-      const soldeRecu = parseFloat(response.data?.balance || '0');
-      setSolde(soldeRecu);
-    } catch (error: any) {
-      console.error("[Accueil] Erreur Profile:", error?.response?.data || error.message);
-      
-      // Sécurité (Sans Axios) : Si 401 (Non autorisé), on nettoie et on redirige vers le login
-      if (error?.response?.status === 401) {
-        await SecureStore.deleteItemAsync('jwt_token');
-        router.replace('/');
-      }
-    } finally {
-      setIsCheckingToken(false);
-    }
-  };
-
-  /**
-   * On utilise useFocusEffect pour forcer le rechargement des données 
-   * À CHAQUE FOIS que l'utilisateur arrive sur cet écran (même après une reconnexion).
+   * RÈGLE D'OR : Récupération du profil et du solde
    */
   useFocusEffect(
     useCallback(() => {
-      fetchSolde();
-    }, [])
+      let ignore = false; // Initialisation de la règle d'or
+
+      async function loadProfile() {
+        try {
+          if (!ignore) setIsCheckingToken(true);
+          
+          const profile = await UserService.getProfile();
+          
+          if (!ignore) {
+            setUserId(profile.id);
+            setSolde(parseFloat(profile.balance.toString()));
+          }
+        } catch (error: unknown) {
+          if (!ignore) {
+            console.error("[Accueil] Erreur Profile:", error);
+            // NB: La gestion du 401 (nettoyage SecureStore) est désormais gérée 
+            // de manière invisible par ton intercepteur api.ts !
+          }
+        } finally {
+          if (!ignore) setIsCheckingToken(false);
+        }
+      }
+
+      loadProfile();
+
+      return () => {
+        ignore = true; // Nettoyage absolu pour éviter les Memory Leaks
+      };
+    }, [setUserId])
   );
 
   /**
-   * GESTION DES NOTIFICATIONS PUSH
+   * RÈGLE D'OR : Gestion des Notifications Push
    */
   useEffect(() => {
     if (!userId) return;
+    let ignore = false; // Initialisation de la règle d'or
 
-    const registerForPushNotificationsAsync = async () => {
-      if (Platform.OS === 'android') {
-        await Notifications.setNotificationChannelAsync('default', {
-          name: 'default',
-          importance: Notifications.AndroidImportance.MAX,
-          vibrationPattern: [0, 250, 250, 250],
-          lightColor: '#8A2BE2',
-        });
-      }
-
-      const { status: existingStatus } = await Notifications.getPermissionsAsync();
-      let finalStatus = existingStatus;
-
-      if (existingStatus !== 'granted') {
-        const { status } = await Notifications.requestPermissionsAsync();
-        finalStatus = status;
-      }
-
-      if (finalStatus !== 'granted') return;
-
-      const projectId = Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;
-      if (!projectId) return;
-
+    async function registerForPushNotificationsAsync() {
       try {
+        if (Platform.OS === 'android') {
+          await Notifications.setNotificationChannelAsync('default', {
+            name: 'default',
+            importance: Notifications.AndroidImportance.MAX,
+            vibrationPattern: [0, 250, 250, 250],
+            lightColor: '#8A2BE2',
+          });
+        }
+
+        const { status: existingStatus } = await Notifications.getPermissionsAsync();
+        let finalStatus = existingStatus;
+
+        if (existingStatus !== 'granted') {
+          const { status } = await Notifications.requestPermissionsAsync();
+          finalStatus = status;
+        }
+
+        if (finalStatus !== 'granted') return;
+
+        const projectId = Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;
+        if (!projectId) return;
+
         const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
         const expoPushToken = tokenData.data;
 
-        if (expoPushToken) {
-          // Sauvegarde du token push via l'instance sécurisée
-          await api.post('/api/auth/push-token', { token: expoPushToken });
+        if (!ignore && expoPushToken) {
+          await UserService.registerPushToken(expoPushToken);
         }
-      } catch (error) {
-        console.error("🚨 Erreur Push Token:", error);
+      } catch (error: unknown) {
+        if (!ignore) {
+          console.error("🚨 Erreur Push Token:", error);
+        }
       }
-    };
+    }
 
     registerForPushNotificationsAsync();
-  }, [userId]);
-
-  /**
-   * GESTION WEBSOCKETS (SOLDE & SESSIONS)
-   */
-  useEffect(() => {
-    if (!userId) return;
-
-    // NETTOYAGE : Utilisation de l'URL dynamique pour les WebSockets
-    const baseURL = process.env.EXPO_PUBLIC_API_URL || 'https://recharge.cielnewton.fr';
-    const socket = io(baseURL, {
-      path: "/api/socket.io",
-      transports: ['websocket']
-    });
-
-    socket.on('user_data_updated', (data) => {
-      if (data.userId === userId) {
-        fetchSolde();
-      }
-    });
-
-    socket.on('live_consumption', (data) => {
-      if (data.userId === userId) {
-        setActiveSessions((prev) => ({
-          ...prev,
-          [data.plugId]: data
-        }));
-      }
-    });
-
-    socket.on('session_auto_stopped', (data) => {
-      if (data.userId === userId && data.plugId) {
-        setActiveSessions((prev) => {
-          const updated = { ...prev };
-          delete updated[data.plugId];
-          return updated;
-        });
-      }
-    });
 
     return () => {
-      socket.disconnect();
+      ignore = true; // Nettoyage absolu
     };
   }, [userId]);
-
-  // Nettoyage manuel si on revient de l'écran d'activation
-  useEffect(() => {
-    if (params.stoppedPlugId) {
-      setActiveSessions((prev) => {
-        const updated = { ...prev };
-        delete updated[params.stoppedPlugId as string];
-        return updated;
-      });
-    }
-  }, [params.stoppedPlugId]);
 
   const handleLogout = async () => {
     try {
@@ -187,6 +144,7 @@ export default function AccueilScreen() {
 
   return (
     <View style={[styles.container, isDark && dynamicStyles.darkContainer]}>
+      {/* HEADER */}
       <View style={styles.header}>
         <View style={styles.topIcons}>
           <TouchableOpacity onPress={() => setIsMenuVisible(true)}>
@@ -210,6 +168,7 @@ export default function AccueilScreen() {
         </View>
       </View>
 
+      {/* BODY */}
       <View style={styles.body}>
         <View style={styles.scanWrapper}>
           <TouchableOpacity style={styles.scanButton} onPress={() => router.push("/scan")}>
@@ -218,18 +177,19 @@ export default function AccueilScreen() {
           <Text style={styles.scanText}>Scan QR</Text>
         </View>
 
-        {Object.values(activeSessions).length > 0 && (
+        {/* AFFICHAGE DES SESSIONS VIA ZUSTAND (Temps Réel) */}
+        {Object.keys(activeSessions).length > 0 && (
           <View style={{ width: '100%', paddingHorizontal: 20, marginTop: 30 }}>
             <Text style={[{ fontSize: 18, fontWeight: 'bold', color: '#333', marginBottom: 15 }, isDark && dynamicStyles.darkText]}>
               🔌 Sessions en cours
             </Text>
-            {Object.values(activeSessions).map((session: any) => (
+            {Object.entries(activeSessions).map(([plugId, session]: [string, any]) => (
               <TouchableOpacity
-                key={session.plugId}
+                key={plugId}
                 onPress={() => router.push({ 
                   pathname: '/activation', 
                   params: { 
-                    plugId: session.plugId, 
+                    plugId: plugId, 
                     active: 'true', 
                     cost: session.cost, 
                     energy: session.energyWh, 
@@ -247,7 +207,7 @@ export default function AccueilScreen() {
                 ]}
               >
                 <View>
-                  <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#8A2BE2' }}>Prise #{session.plugId}</Text>
+                  <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#8A2BE2' }}>Prise #{plugId}</Text>
                   <Text style={[{ fontSize: 14, color: '#666', marginTop: 4 }, isDark && dynamicStyles.darkText]}>
                     En charge • {Number(session.energyWh).toFixed(1)} Wh • {Number(session.cost).toFixed(1)} €
                   </Text>
@@ -259,12 +219,8 @@ export default function AccueilScreen() {
         )}
       </View>
 
-      <Modal
-        visible={isMenuVisible}
-        transparent={true}
-        animationType="fade"
-        onRequestClose={() => setIsMenuVisible(false)}
-      >
+      {/* MODAL MENU */}
+      <Modal visible={isMenuVisible} transparent={true} animationType="fade" onRequestClose={() => setIsMenuVisible(false)}>
         <View style={[styles.modalOverlay, isDark && dynamicStyles.darkOverlay]}>
           <View style={[styles.menuContainer, isDark && dynamicStyles.darkCard]}>
             <TouchableOpacity style={styles.menuCloseButton} onPress={() => setIsMenuVisible(false)}>
