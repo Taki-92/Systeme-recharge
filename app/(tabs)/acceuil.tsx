@@ -102,7 +102,7 @@ export default function AccueilScreen() {
         if (finalStatus !== 'granted') return;
 
         const projectId = Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;
-        if (!projectId) return;
+        if (!projectId) return; 
 
         const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
         const expoPushToken = tokenData.data;
