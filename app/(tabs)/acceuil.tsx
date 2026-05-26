@@ -1,26 +1,25 @@
 import { Ionicons } from '@expo/vector-icons';
-import Constants from 'expo-constants';
-import * as Notifications from 'expo-notifications';
 import { useFocusEffect, useRouter } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
-import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Modal, Platform, StyleSheet, Text, TouchableOpacity, View, useColorScheme } from 'react-native';
+import React, { useCallback, useState } from 'react';
+import { ActivityIndicator, FlatList, Modal, StyleSheet, Text, TouchableOpacity, View, useColorScheme } from 'react-native';
 import Toast from 'react-native-toast-message';
 
 // L'architecture propre : Services et Store
 import { UserService } from '../../services/userService';
+import { useNotificationStore } from '../../store/useNotificationStore';
 import { UserState, useUserStore } from '../../store/useUserStore';
 import { styles } from '../../styles/acceuil.styles';
 
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
-});
+const formatNotifDate = (timestamp: number) => {
+  const date = new Date(timestamp);
+  return date.toLocaleDateString('fr-FR', {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
 
 export default function AccueilScreen() {
   const router = useRouter();
@@ -28,14 +27,26 @@ export default function AccueilScreen() {
   const isDark = colorScheme === 'dark';
 
   // 1. État local purement UI
-  const [solde, setSolde] = useState(0);
   const [isCheckingToken, setIsCheckingToken] = useState(true);
   const [isMenuVisible, setIsMenuVisible] = useState(false);
+  const [isNotifModalVisible, setIsNotifModalVisible] = useState(false);
 
   // 2. État global récupéré de Zustand (Synchronisé via le _layout)
   const userId = useUserStore((state: UserState) => state.userId);
   const setUserId = useUserStore((state: UserState) => state.setUserId);
   const activeSessions = useUserStore((state: UserState) => state.activeSessions);
+  const clearStore = useUserStore((state: UserState) => state.clearStore);
+
+  const solde = useUserStore((state: UserState) => state.balance);
+  const setSolde = useUserStore((state: UserState) => state.setBalance);
+
+  // 🔔 Gestion des notifications pour la cloche
+  const markAllAsRead = useNotificationStore((state) => state.markAllAsRead);
+  const clearAllNotifs = useNotificationStore((state) => state.clearAll);
+
+  const notificationsRecord = useNotificationStore((state) => state.notifications);
+  const userNotifications = userId ? (notificationsRecord[userId] || []) : [];
+  const unreadCount = userNotifications.filter(n => !n.isRead).length;
 
   /**
    * RÈGLE D'OR : Récupération du profil et du solde
@@ -73,59 +84,9 @@ export default function AccueilScreen() {
     }, [setUserId])
   );
 
-  /**
-   * RÈGLE D'OR : Gestion des Notifications Push
-   */
-  useEffect(() => {
-    if (!userId) return;
-    let ignore = false; // Initialisation de la règle d'or
-
-    async function registerForPushNotificationsAsync() {
-      try {
-        if (Platform.OS === 'android') {
-          await Notifications.setNotificationChannelAsync('default', {
-            name: 'default',
-            importance: Notifications.AndroidImportance.MAX,
-            vibrationPattern: [0, 250, 250, 250],
-            lightColor: '#8A2BE2',
-          });
-        }
-
-        const { status: existingStatus } = await Notifications.getPermissionsAsync();
-        let finalStatus = existingStatus;
-
-        if (existingStatus !== 'granted') {
-          const { status } = await Notifications.requestPermissionsAsync();
-          finalStatus = status;
-        }
-
-        if (finalStatus !== 'granted') return;
-
-        const projectId = Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;
-        if (!projectId) return; 
-
-        const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
-        const expoPushToken = tokenData.data;
-
-        if (!ignore && expoPushToken) {
-          await UserService.registerPushToken(expoPushToken);
-        }
-      } catch (error: unknown) {
-        if (!ignore) {
-          console.error("🚨 Erreur Push Token:", error);
-        }
-      }
-    }
-
-    registerForPushNotificationsAsync();
-
-    return () => {
-      ignore = true; // Nettoyage absolu
-    };
-  }, [userId]);
-
   const handleLogout = async () => {
     try {
+      clearStore(); // 🧹 Purge intégrale de l'état global AVANT la suppression du token
       await SecureStore.deleteItemAsync('jwt_token');
       setIsMenuVisible(false);
       router.replace('/');
@@ -154,8 +115,30 @@ export default function AccueilScreen() {
             <TouchableOpacity style={styles.iconMargin} onPress={() => router.push('/recharge')}>
               <Ionicons name="card-outline" size={28} color="white" />
             </TouchableOpacity>
-            <TouchableOpacity>
-              <Ionicons name="notifications-outline" size={28} color="white" />
+            <TouchableOpacity onPress={() => {
+              if (userId) markAllAsRead(userId);
+              setIsNotifModalVisible(true);
+            }}>
+              <View>
+                <Ionicons name="notifications-outline" size={28} color="white" />
+                {unreadCount > 0 && (
+                  <View style={{
+                    position: 'absolute',
+                    right: -4,
+                    top: -2,
+                    backgroundColor: 'red',
+                    borderRadius: 10,
+                    width: 18,
+                    height: 18,
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                  }}>
+                    <Text style={{ color: 'white', fontSize: 10, fontWeight: 'bold' }}>
+                      {unreadCount > 9 ? '9+' : unreadCount}
+                    </Text>
+                  </View>
+                )}
+              </View>
             </TouchableOpacity>
           </View>
         </View>
@@ -243,6 +226,48 @@ export default function AccueilScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* MODAL NOTIFICATIONS */}
+      <Modal visible={isNotifModalVisible} transparent={true} animationType="fade" onRequestClose={() => setIsNotifModalVisible(false)}>
+        <View style={[styles.modalOverlay, isDark && dynamicStyles.darkOverlay]}>
+          <View style={[notifStyles.modalContainer, isDark && dynamicStyles.darkCard]}>
+            <View style={notifStyles.header}>
+              <Text style={[notifStyles.title, isDark && dynamicStyles.darkText]}>Notifications</Text>
+              {userNotifications.length > 0 && (
+                <TouchableOpacity onPress={() => { if (userId) clearAllNotifs(userId); }}>
+                  <Text style={{ color: '#8A2BE2', fontWeight: 'bold' }}>Tout effacer</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {userNotifications.length === 0 ? (
+              <View style={notifStyles.emptyContainer}>
+                <Ionicons name="notifications-off-outline" size={50} color={isDark ? '#666' : '#ccc'} />
+                <Text style={[notifStyles.emptyText, isDark && { color: '#aaa' }]}>Aucune notification pour le moment.</Text>
+              </View>
+            ) : (
+              <FlatList
+                data={userNotifications}
+                keyExtractor={(item) => item.id}
+                renderItem={({ item }) => (
+                  <View style={[notifStyles.item, isDark && dynamicStyles.darkNotifItem]}>
+                    <View style={notifStyles.itemHeader}>
+                      <Text style={[notifStyles.itemTitle, isDark && dynamicStyles.darkText]} numberOfLines={1}>{item.title}</Text>
+                      <Text style={notifStyles.itemDate}>{formatNotifDate(item.timestamp)}</Text>
+                    </View>
+                    <Text style={[notifStyles.itemMessage, isDark && { color: '#ccc' }]}>{item.message}</Text>
+                  </View>
+                )}
+                style={{ maxHeight: 400, width: '100%' }}
+              />
+            )}
+
+            <TouchableOpacity style={notifStyles.closeButton} onPress={() => setIsNotifModalVisible(false)}>
+              <Text style={notifStyles.closeText}>Fermer</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -252,4 +277,20 @@ const dynamicStyles = StyleSheet.create({
   darkCard: { backgroundColor: '#1E1E1E' },
   darkText: { color: '#FFFFFF' },
   darkOverlay: { backgroundColor: 'rgba(0, 0, 0, 0.85)' },
+  darkNotifItem: { borderBottomColor: '#333' },
+});
+
+const notifStyles = StyleSheet.create({
+  modalContainer: { backgroundColor: 'white', borderRadius: 20, padding: 20, width: '90%', maxHeight: '80%', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 5 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: '#eee' },
+  title: { fontSize: 20, fontWeight: 'bold' },
+  emptyContainer: { padding: 30, alignItems: 'center' },
+  emptyText: { marginTop: 15, color: '#666', textAlign: 'center' },
+  item: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#eee' },
+  itemHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4, alignItems: 'center' },
+  itemTitle: { fontSize: 16, fontWeight: 'bold', flex: 1, marginRight: 10 },
+  itemMessage: { fontSize: 14, color: '#555' },
+  itemDate: { fontSize: 12, color: '#888' },
+  closeButton: { marginTop: 15, backgroundColor: '#8A2BE2', padding: 12, borderRadius: 10, alignItems: 'center' },
+  closeText: { color: 'white', fontWeight: 'bold', fontSize: 16 },
 });

@@ -1,17 +1,24 @@
 {
   "cli": {
-    "version": ">= 3.8.2",
-    "appVersionSource": "local"
+    "version": ">= 7.0.0"
   },
   "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal"
+    },
     "preview": {
+      "distribution": "internal",
       "android": {
         "buildType": "apk"
       },
-      "ios": {
-        "simulator": true
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://recharge.cielnewton.fr"
       }
     },
+    "production": {}
+  },
+  "submit": {
     "production": {}
   }
 }

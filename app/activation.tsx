@@ -119,27 +119,29 @@ export default function ActivationScreen() {
     setIsLoading(true);
     try {
       const data = await SessionService.stopCharging(plugId);
+
       const rawCost = data?.cost || "0";
       const rawBalance = data?.newBalance || "0";
 
       const finalCost = parseFloat(String(rawCost).replace('€', '').trim()) || 0;
       const finalBalance = parseFloat(String(rawBalance).replace('€', '').trim()) || 0;
 
-      removeSession(plugId);
-      
       Alert.alert(
         "Charge terminée",
         `Coût : ${finalCost.toFixed(2)} €\nNouveau solde : ${finalBalance.toFixed(2)} €`,
         [{ text: "OK", onPress: () => router.replace('/acceuil') }]
       );
     } catch (error: any) {
+      console.log("Le serveur a renvoyé une erreur, mais on nettoie quand même l'UI", error);
+      
       if (error.response?.status === 400 || error.response?.status === 404) {
-        removeSession(plugId);
         router.replace('/acceuil');
       } else {
         handleError(error, "Erreur lors de l'arrêt.");
       }
     } finally {
+      // QUOI QU'IL ARRIVE (Succès ou Erreur), on supprime la prise de l'écran
+      removeSession(plugId);
       setIsLoading(false);
     }
   };

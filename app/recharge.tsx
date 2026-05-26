@@ -23,6 +23,47 @@ export default function RechargeScreen() {
   const amounts = [5, 10, 20];
   const isProcessing = processingType !== null;
 
+  // Gestionnaire d'erreurs centralisé, typé et réaliste vis-à-vis d'Axios
+  const handleApiError = (error: unknown, defaultMsg: string) => {
+    let errorMessage = defaultMsg;
+    
+    if (axios.isAxiosError(error)) {
+      console.log("🚨 [REJET API] :", error.response?.data || error.message);
+      
+      if (error.response?.status === 401) {
+        errorMessage = 'Paiement non autorisé ou session expirée.';
+      } else if (error.response?.data?.error) {
+        errorMessage = error.response.data.error;
+      }
+    } else {
+      console.error("🚨 [ERREUR CRITIQUE] :", error);
+    }
+
+    Toast.show({ type: 'error', text1: 'Erreur', text2: errorMessage, position: 'top' });
+  };
+
+  const verifyStripeSession = async (sessionId: string) => {
+    setProcessingType('verifying');
+    setStatusMessage('Validation du paiement Stripe...');
+    try {
+      const data = await PaymentService.verifyStripeSession(sessionId);
+      
+      Toast.show({
+        type: 'success',
+        text1: 'Paiement réussi!',
+        text2: data.message || `Solde : ${data.newBalance}€`,
+        position: 'top'
+      });
+      router.navigate('/acceuil');
+    } catch (error: unknown) {
+      handleApiError(error, "Le paiement Stripe a échoué.");
+      router.navigate('/recharge'); // Redirection en cas d'échec
+    } finally {
+      setProcessingType(null);
+      setStatusMessage('');
+    }
+  };
+
   /**
    * RÈGLE D'OR : Deep Linking et Vérification asynchrone au montage
    */
@@ -69,47 +110,6 @@ export default function RechargeScreen() {
       subscription.remove();
     };
   }, []);
-
-  // Gestionnaire d'erreurs centralisé, typé et réaliste vis-à-vis d'Axios
-  const handleApiError = (error: unknown, defaultMsg: string) => {
-    let errorMessage = defaultMsg;
-    
-    if (axios.isAxiosError(error)) {
-      console.log("🚨 [REJET API] :", error.response?.data || error.message);
-      
-      if (error.response?.status === 401) {
-        errorMessage = 'Paiement non autorisé ou session expirée.';
-      } else if (error.response?.data?.error) {
-        errorMessage = error.response.data.error;
-      }
-    } else {
-      console.error("🚨 [ERREUR CRITIQUE] :", error);
-    }
-
-    Toast.show({ type: 'error', text1: 'Erreur', text2: errorMessage, position: 'top' });
-  };
-
-  const verifyStripeSession = async (sessionId: string) => {
-    setProcessingType('verifying');
-    setStatusMessage('Validation du paiement Stripe...');
-    try {
-      const data = await PaymentService.verifyStripeSession(sessionId);
-      
-      Toast.show({
-        type: 'success',
-        text1: 'Paiement réussi!',
-        text2: data.message || `Solde : ${data.newBalance}€`,
-        position: 'top'
-      });
-      router.navigate('/acceuil');
-    } catch (error: unknown) {
-      handleApiError(error, "Le paiement Stripe a échoué.");
-      router.navigate('/recharge'); // Redirection en cas d'échec
-    } finally {
-      setProcessingType(null);
-      setStatusMessage('');
-    }
-  };
 
   const handleStripePayment = async () => {
     setProcessingType('stripe');
