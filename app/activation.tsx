@@ -19,18 +19,20 @@ export default function ActivationScreen() {
   const userId = useUserStore((state: UserState) => state.userId);
   const setUserId = useUserStore((state: UserState) => state.setUserId);
   const activeSessions = useUserStore((state: UserState) => state.activeSessions);
+  const currentSession = activeSessions[plugId]; // Récupère la session active pour cette prise
   const addSession = useUserStore((state: UserState) => state.addSession);
   const removeSession = useUserStore((state: UserState) => state.removeSession);
 
   // État local déduit du Store
-  const isCharging = !!activeSessions[plugId];
+  const isCharging = !!currentSession;
 
   // States UI & Live Data
   const [isLoading, setIsLoading] = useState(false);
-  const [liveCost, setLiveCost] = useState(cost ? String(cost) : '0.00');
-  const [liveEnergy, setLiveEnergy] = useState(energy ? String(energy) : '0');
-  const [power, setPower] = useState(initialPower ? String(initialPower) : '0');
-  const [voltage, setVoltage] = useState('0');
+  // Les données live sont désormais dérivées de Zustand pour une source de vérité unique
+  const liveCost = currentSession?.cost ? Number(currentSession.cost).toFixed(2) : '0.00';
+  const liveEnergy = currentSession?.energyWh ? Number(currentSession.energyWh).toFixed(1) : '0';
+  const power = currentSession?.power ? String(currentSession.power) : '0';
+  const voltage = currentSession?.voltage ? String(currentSession.voltage) : '0';
   const [isAdminStopModalVisible, setIsAdminStopModalVisible] = useState(false);
 
   const colorScheme = useColorScheme();
@@ -101,10 +103,7 @@ export default function ActivationScreen() {
     try {
       await SessionService.startCharging(plugId);
       addSession(plugId, { startTime: Date.now() });
-      setLiveCost('0.00');
-      setLiveEnergy('0');
-      setPower('0');
-      setVoltage('0');
+      // Le composant va se re-render et afficher les valeurs par défaut de la session
     } catch (error) {
       handleError(error, "Impossible d'activer la prise.");
     } finally {

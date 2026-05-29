@@ -4,7 +4,7 @@ import axios from 'axios';
 import * as Linking from 'expo-linking';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, SafeAreaView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Toast from 'react-native-toast-message';
 import { WebView } from 'react-native-webview';
 
@@ -73,22 +73,38 @@ export default function RechargeScreen() {
     async function checkInitialUrl() {
       try {
         const url = await Linking.getInitialURL();
-        if (!ignore && url && url.includes('stripe_session_id=')) {
-          const sessionId = url.split('stripe_session_id=')[1].split('&')[0];
-          if (sessionId) {
-            if (!ignore) setProcessingType('verifying');
-            if (!ignore) setStatusMessage('Validation du paiement Stripe...');
-            
-            const data = await PaymentService.verifyStripeSession(sessionId);
-            
-            if (!ignore) {
-              Toast.show({ type: 'success', text1: 'Paiement réussi!',   text2: data.message || `Solde : ${data.newBalance}€`, position: 'top' });
-              router.navigate('/acceuil');
+        if (!ignore && url) {
+          // 1. Interception sécurisée de Stripe
+          if (url.includes('stripe_session_id=')) {
+            const sessionId = url.split('stripe_session_id=')[1].split('&')[0];
+            if (sessionId) {
+              if (!ignore) setProcessingType('verifying');
+              if (!ignore) setStatusMessage('Validation du paiement Stripe...');
+              
+              const data = await PaymentService.verifyStripeSession(sessionId);
+              if (!ignore) {
+                Toast.show({ type: 'success', text1: 'Paiement réussi!', text2: data.message || `Solde : ${data.newBalance}€`, position: 'top' });
+                router.navigate('/acceuil');
+              }
+            }
+          }
+          // 2. Interception sécurisée de PayPal (si Deep Link via navigateur externe)
+          else if (url.includes('PayerID=') && url.includes('token=')) {
+            const urlTokenMatch = url.match(/token=([^&]+)/);
+            const finalOrderId = urlTokenMatch ? urlTokenMatch[1] : null;
+            if (finalOrderId) {
+              if (!ignore) setProcessingType('verifying');
+              if (!ignore) setStatusMessage('Validation du paiement PayPal...');
+              const data = await PaymentService.capturePayPalOrder(finalOrderId);
+              if (!ignore) {
+                Toast.show({ type: 'success', text1: 'Paiement réussi', text2: `Nouveau solde : ${data.newBalance}€`, position: 'top' });
+                router.navigate('/acceuil');
+              }
             }
           }
         }
       } catch (error: unknown) {
-        if (!ignore) handleApiError(error, "Le paiement Stripe a échoué.");
+        if (!ignore) handleApiError(error, "La validation du paiement a échoué.");
       } finally {
         if (!ignore) setProcessingType(null);
         if (!ignore) setStatusMessage('');
@@ -143,7 +159,13 @@ export default function RechargeScreen() {
       if (!data.id) throw new Error("ID de commande manquant");
 
       setOrderId(data.id);
-      setPaypalUrl(`https://www.sandbox.paypal.com/checkoutnow?token=${data.id}`);
+      
+      // Règle 2 : Switch dynamique de l'environnement PayPal (Production vs Sandbox)
+      const paypalBaseUrl = process.env.NODE_ENV === 'production' ? 'https://www.paypal.com' : 'https://www.sandbox.paypal.com';
+      setPaypalUrl(`${paypalBaseUrl}/checkoutnow?token=${data.id}`);
+      console.log("message")
+      console.log (process.env.NODE_ENV);
+      
       setShowWebView(true);
     } catch (error: unknown) {
       handleApiError(error, "Impossible d'initialiser le paiement.");
@@ -174,14 +196,10 @@ export default function RechargeScreen() {
   };
 
   const handleNavigationStateChange = (navState: any) => {
-    const { url } = navState;
-    if (url.includes('return') || url.includes('success')) {
-      setShowWebView(false);
-      if (orderId) captureOrder(orderId);
-    } else if (url.includes('cancel')) {
-      setShowWebView(false);
-      Toast.show({ type: 'info', text1: 'Annulé', text2: 'Le paiement a été annulé.', position: 'top' });
-    }
+    // Ce gestionnaire reste en place comme fallback, mais la logique critique
+    // est maintenant dans onShouldStartLoadWithRequest pour une interception plus agressive.
+    // On peut par exemple logguer ici si on veut surveiller la navigation interne de PayPal.
+    // console.log("[WebView Fallback] Navigation State Change:", navState.url);
   };
 
   return (
@@ -194,13 +212,67 @@ export default function RechargeScreen() {
       </View>
 
       {showWebView ? (
-        <WebView
-          source={{ uri: paypalUrl }}
-          onNavigationStateChange={handleNavigationStateChange}
-          startInLoadingState={true}
-          renderLoading={() => <ActivityIndicator size="large" color="#8A2BE2" style={{ flex: 1 }} />}
-          style={{ flex: 1 }}
-        />
+        <SafeAreaView style={{ flex: 1, backgroundColor: '#FFF' }}>
+          {/* L'en-tête d'échappatoire */}
+          <View style={{ padding: 15, borderBottomWidth: 1, borderColor: '#eee', alignItems: 'flex-end' }}>
+            <TouchableOpacity onPress={() => {
+              setShowWebView(false);
+              Toast.show({ type: 'info', text1: 'Paiement annulé' });
+            }}>
+              <Text style={{ color: 'red', fontWeight: 'bold', fontSize: 16 }}>Annuler</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Ta WebView Indestructible en dessous */}
+          <WebView
+            source={{ uri: paypalUrl }}
+            // 1. OBLIGATOIRE : On autorise la WebView à traiter tous les types d'URL, y compris les Deep Links
+            originWhitelist={['*']}
+
+            // 👇 LES 4 LIGNES MAGIQUES 👇
+            javaScriptEnabled={true}
+            domStorageEnabled={true}
+            sharedCookiesEnabled={true} // Obligatoire pour iOS
+            thirdPartyCookiesEnabled={true} // Obligatoire pour Android
+            mixedContentMode="always"
+            
+            // Le déguisement anti-blocage (NOUVEAU)
+            userAgent="Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.5481.153 Mobile Safari/537.36"
+
+            // 2. INTERCEPTION AGRESSIVE : On inspecte la requête avant de la charger
+            onShouldStartLoadWithRequest={(request) => {
+              const { url } = request;
+
+              console.log("[WebView Intercept] Tentative de chargement :", url);
+
+              if (url.includes('PayerID=') && url.includes('token=')) {
+                setShowWebView(false); // On ferme la modale immédiatement
+
+                const urlTokenMatch = url.match(/token=([^&]+)/);
+                const finalOrderId = urlTokenMatch ? urlTokenMatch[1] : orderId;
+
+                if (finalOrderId && processingType !== 'verifying') {
+                  captureOrder(finalOrderId);
+                }
+
+                return false; // RÈGLE CRITIQUE : On bloque le chargement de cette URL dans la WebView
+              }
+
+              if (url.includes('cancel')) {
+                setShowWebView(false);
+                Toast.show({ type: 'info', text1: 'Annulé', text2: 'Le paiement a été annulé.', position: 'top' });
+                return false; // On bloque le chargement
+              }
+
+              // On laisse passer toutes les autres URLs (la navigation interne de PayPal)
+              return true;
+            }}
+            onNavigationStateChange={handleNavigationStateChange}
+            startInLoadingState={true}
+            renderLoading={() => <ActivityIndicator size="large" color="#8A2BE2" style={{ flex: 1 }} />}
+            style={{ flex: 1 }}
+          />
+        </SafeAreaView>
       ) : (
         <View style={styles.content}>
           <Text style={styles.sectionTitle}>Choisir un montant</Text>

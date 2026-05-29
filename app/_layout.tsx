@@ -60,7 +60,7 @@ export async function registerForPushNotificationsAsync(userToken: string | null
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${userToken}`,
           },
-          body: JSON.stringify({ pushToken: token }),
+          body: JSON.stringify({ token: token }),
         });
       }
     } catch (e) {
@@ -186,6 +186,21 @@ export default function RootLayout() {
         }
       });
 
+      // ⚡ Écoute de la tension instantanée (Volts)
+      socket.on('voltage_update', (data: any) => {
+        const cleanPlugId = data?.plugId ? String(data.plugId).trim() : '';
+        
+        // Filtrage strict : on ignore l'événement si la session n'existe pas localement
+        if (!useUserStore.getState().activeSessions[cleanPlugId]) return;
+
+        if (cleanPlugId && updateSessionData) {
+          // Le serveur envoie { plugId, voltage }
+          updateSessionData(cleanPlugId, { voltage: data.voltage });
+        }
+      });
+
+
+
       // Typage de l'événement Socket pour sécuriser le build
       socket.on('session_auto_stopped', (data: { 
         userId: number; 
@@ -242,6 +257,7 @@ export default function RootLayout() {
         socket.off('power_update');
         socket.off('live_consumption');
         socket.off('session_auto_stopped');
+        socket.off('voltage_update'); // LA RÈGLE D'OR DE L'ARCHITECTE : LE NETTOYAGE
         socket.off('status_update');
         socket.disconnect();
       }

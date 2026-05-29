@@ -19,16 +19,16 @@ export interface ActiveSession {
 
 export const SessionService = {
   startCharging: async (plugId: string): Promise<void> => {
-    await api.post('/api/plugs/start', { plugId });
+    await api.post('/plugs/start', { plugId });
   },
 
   stopCharging: async (plugId: string): Promise<StopChargeResponse> => {
-    const response = await api.post<StopChargeResponse>('/api/plugs/stop', { plugId });
+    const response = await api.post<StopChargeResponse>('/plugs/stop', { plugId });
     return response.data;
   },
 
   getPlugStatus: async (plugId: string): Promise<any> => {
-    const response = await api.get(`/api/plugs/${plugId}/status`);
+    const response = await api.get(`/plugs/${plugId}/status`);
     return response.data;
   }
 };

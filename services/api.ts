@@ -6,7 +6,7 @@ import { forceLogoutFromApi } from './authLogout';
 export const API_URL = process.env.EXPO_PUBLIC_API_URL;
 
 const api = axios.create({
-  baseURL: API_URL,
+  baseURL: `${API_URL}/api`,
   timeout: 15000,
   headers: {
     'Content-Type': 'application/json',

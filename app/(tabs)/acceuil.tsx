@@ -30,6 +30,7 @@ export default function AccueilScreen() {
   const [isCheckingToken, setIsCheckingToken] = useState(true);
   const [isMenuVisible, setIsMenuVisible] = useState(false);
   const [isNotifModalVisible, setIsNotifModalVisible] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   // 2. État global récupéré de Zustand (Synchronisé via le _layout)
   const userId = useUserStore((state: UserState) => state.userId);
@@ -39,6 +40,8 @@ export default function AccueilScreen() {
 
   const solde = useUserStore((state: UserState) => state.balance);
   const setSolde = useUserStore((state: UserState) => state.setBalance);
+  const userName = useUserStore((state: any) => state.userName);
+  const setUserName = useUserStore((state: any) => state.setUserName);
 
   // 🔔 Gestion des notifications pour la cloche
   const markAllAsRead = useNotificationStore((state) => state.markAllAsRead);
@@ -64,6 +67,12 @@ export default function AccueilScreen() {
           if (!ignore) {
             setUserId(profile.id);
             setSolde(parseFloat(profile.balance.toString()));
+            
+            // 👤 Mise à jour dynamique du prénom dans le store
+            const fetchedName = (profile as any).name;
+            if (fetchedName && setUserName) {
+              setUserName(fetchedName);
+            }
           }
         } catch (error: unknown) {
           if (!ignore) {
@@ -85,13 +94,26 @@ export default function AccueilScreen() {
   );
 
   const handleLogout = async () => {
+    if (isLoggingOut) return;
+    setIsLoggingOut(true); // Verrouille le bouton et affiche le spinner
+
     try {
-      clearStore(); // 🧹 Purge intégrale de l'état global AVANT la suppression du token
+      // 1. Déconnexion API silencieuse (Fail-safe réseau)
+      try {
+        // Si tu as un endpoint de déconnexion côté backend, appelle-le ici :
+        // await api.post('/auth/logout');
+      } catch (apiError) {
+        console.warn("L'API de déconnexion est injoignable, on continue le nettoyage local.");
+      }
+
+      clearStore(); // 2. Purge intégrale de l'état global AVANT la suppression du token
       await SecureStore.deleteItemAsync('jwt_token');
       setIsMenuVisible(false);
-      router.replace('/');
+      router.replace('/'); // 4. Redirection propre vers la page de connexion
     } catch (error) {
       Toast.show({ type: 'error', text1: 'Erreur', text2: "Déconnexion impossible.", position: 'top' });
+    } finally {
+      setIsLoggingOut(false); // 5. Règle d'or : On débloque l'UI quoi qu'il arrive !
     }
   };
 
@@ -144,6 +166,9 @@ export default function AccueilScreen() {
         </View>
 
         <View style={styles.balanceContainer}>
+          <Text style={{ fontSize: 34, color: 'white', fontWeight: 'bold', marginBottom: 10 }}>
+            Bonjour, {userName || 'Étudiant'} 
+          </Text>
           <Text style={styles.balanceText}>Solde: {solde.toFixed(2).replace('.', ',')} €</Text>
           <TouchableOpacity style={styles.rechargeButton} onPress={() => router.push('/recharge')}>
             <Text style={styles.rechargeButtonText}>Recharger</Text>
@@ -220,8 +245,12 @@ export default function AccueilScreen() {
               <Text style={[styles.menuText, isDark && dynamicStyles.darkText]}>Historique des transactions</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.menuItem} onPress={handleLogout}>
-              <Text style={[styles.menuText, { color: 'red' }]}>Déconnexion</Text>
+            <TouchableOpacity style={styles.menuItem} onPress={handleLogout} disabled={isLoggingOut}>
+              {isLoggingOut ? (
+                <ActivityIndicator color="red" />
+              ) : (
+                <Text style={[styles.menuText, { color: 'red' }]}>Déconnexion</Text>
+              )}
             </TouchableOpacity>
           </View>
         </View>

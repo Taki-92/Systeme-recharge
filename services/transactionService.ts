@@ -16,7 +16,7 @@ export const TransactionService = {
    */
   getTopUps: async (): Promise<Transaction[]> => {
     // Le service encapsule l'URL exacte
-    const response = await api.get<Transaction[]>('/api/consumption/transactions');
+    const response = await api.get<Transaction[]>('/consumption/transactions');
     
     // Le filtrage métier se fait ici, pas dans le composant UI
     return response.data.filter((item: Transaction) => item.type === 'recharge');

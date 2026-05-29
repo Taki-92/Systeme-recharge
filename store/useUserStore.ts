@@ -3,6 +3,8 @@ import { create } from 'zustand';
 export interface UserState {
   userId: string | null;
   setUserId: (id: string | null) => void;
+  userName: string | null;
+  setUserName: (name: string | null) => void;
   balance: number;
   setBalance: (balance: number) => void;
   // On remplace le booléen par un dictionnaire des sessions actives
@@ -17,6 +19,9 @@ export const useUserStore = create<UserState>((set) => ({
   userId: null,
   setUserId: (id) => set({ userId: id }),
   
+  userName: null,
+  setUserName: (name) => set({ userName: name }),
+
   balance: 0,
   setBalance: (balance) => set({ balance }),
   
@@ -37,24 +42,26 @@ export const useUserStore = create<UserState>((set) => ({
       let safeCost = data?.cost !== undefined ? Number(String(data.cost).replace('€', '').trim()) : (currentSession.cost ?? 0);
       let safeEnergy = data?.energyWh !== undefined ? Number(data.energyWh) : (currentSession.energyWh ?? 0);
       let safePower = data?.power !== undefined ? Number(data.power) : (currentSession.power ?? 0);
+      let safeVoltage = data?.voltage !== undefined ? Number(data.voltage) : (currentSession.voltage ?? 0);
 
       if (isNaN(safeCost)) safeCost = 0;
       if (isNaN(safeEnergy)) safeEnergy = 0;
       if (isNaN(safePower)) safePower = 0;
+      if (isNaN(safeVoltage)) safeVoltage = 0;
 
       return { 
           activeSessions: { 
               ...state.activeSessions, 
               [plugId]: { 
                   ...currentSession, 
-                  ...data,
                   cost: safeCost, 
                   energyWh: safeEnergy, 
-                  power: safePower 
+                  power: safePower,
+                  voltage: safeVoltage,
               } 
           } 
       };
   }),
   
-  clearStore: () => set({ userId: null, activeSessions: {}, balance: 0 }),
+  clearStore: () => set({ userId: null, userName: null, activeSessions: {}, balance: 0 }),
 }));
