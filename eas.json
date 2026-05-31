@@ -18,6 +18,9 @@
     },
     "production": {
       // En retirant buildType, EAS génère le .aab par défaut (idéal pour le Play Store)
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://recharge.cielnewton.fr"
+      }
     }
   },
   "submit": {
