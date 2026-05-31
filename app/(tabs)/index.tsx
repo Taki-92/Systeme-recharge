@@ -1,9 +1,9 @@
 // Fichier : app/index.tsx
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, ImageBackground, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import Toast from 'react-native-toast-message';
 
@@ -25,8 +25,18 @@ export default function LoginScreen() {
   const [isCheckingToken, setIsCheckingToken] = useState(true);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
+  //  Filet de sécurité du cache (Expo Router)
+  useFocusEffect(
+    useCallback(() => {
+      // Force l'arrêt du spinner dès que l'écran est affiché
+      setIsLoggingIn(false);
+      // Sécurité : On vide le mot de passe pour forcer une reconnexion propre
+      setPassword('');
+    }, [])
+  );
+
   /**
-   * RÈGLE D'OR : Vérification silencieuse de la session (Silent Login)
+  Vérification silencieuse de la session (Silent Login)
    * On regarde si un token existe au démarrage pour éviter de redemander les identifiants.
    */
   useEffect(() => {
@@ -97,7 +107,6 @@ export default function LoginScreen() {
         Toast.show({ type: 'error', text1: 'Erreur', text2: 'Impossible de contacter le serveur.', position: 'top' });
         console.error("Erreur inattendue:", error);
       }
-    } finally {
       setIsLoggingIn(false);
     }
   };

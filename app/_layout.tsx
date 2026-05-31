@@ -16,6 +16,7 @@ import { io } from 'socket.io-client';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { usePushNotifications } from '../hooks/usePushNotifications';
+import api from '../services/api'; // Import de l'instance Axios configurée
 import { useNotificationStore } from '../store/useNotificationStore';
 import { UserState, useUserStore } from '../store/useUserStore';
 
@@ -54,14 +55,7 @@ export async function registerForPushNotificationsAsync(userToken: string | null
     try {
       token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
       if (userToken) {
-        await fetch('https://recharge.cielnewton.fr/api/auth/push-token', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${userToken}`,
-          },
-          body: JSON.stringify({ token: token }),
-        });
+        await api.post('/auth/push-token', { token: token });
       }
     } catch (e) {
       console.error(e);
@@ -119,11 +113,16 @@ export default function RootLayout() {
   useEffect(() => {
     if (!userId) return;
 
+    let ignore = false;
     let socket: any = null;
 
     async function initSocket() {
       // 🔐 Récupération asynchrone du JWT
       const token = await SecureStore.getItemAsync('jwt_token');
+      
+      // On tue l'exécution si le composant est mort pendant le await
+      if (ignore) return;
+      
       const baseURL = process.env.EXPO_PUBLIC_API_URL || '';
 
       socket = io(baseURL, {
@@ -250,6 +249,7 @@ export default function RootLayout() {
     initSocket();
 
     return () => {
+      ignore = true;
       if (socket) {
         socket.off('connect');
         socket.off('connect_error');
@@ -257,7 +257,7 @@ export default function RootLayout() {
         socket.off('power_update');
         socket.off('live_consumption');
         socket.off('session_auto_stopped');
-        socket.off('voltage_update'); // LA RÈGLE D'OR DE L'ARCHITECTE : LE NETTOYAGE
+        socket.off('voltage_update'); //  L'ARCHITECTE : LE NETTOYAGE
         socket.off('status_update');
         socket.disconnect();
       }

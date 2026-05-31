@@ -20,8 +20,8 @@ export async function forceLogoutFromApi(error: any): Promise<void> {
 
     try {
       await SecureStore.deleteItemAsync('jwt_token');
-    } catch (secureStoreError) {
-      console.error('Erreur lors de la suppression du jwt_token :', secureStoreError);
+    } catch (storageError) {
+      console.error('Erreur lors de la suppression du jwt_token :', storageError);
     }
 
     router.replace('/');

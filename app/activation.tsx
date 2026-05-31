@@ -39,7 +39,7 @@ export default function ActivationScreen() {
   const isDark = colorScheme === 'dark';
 
   /**
-   * RÈGLE D'OR 1 : Initialisation du profil utilisateur
+   * 1 : Initialisation du profil utilisateur
    */
   useEffect(() => {
     let ignore = false;
@@ -52,6 +52,8 @@ export default function ActivationScreen() {
         }
       } catch (e) {
         if (!ignore) {
+          // On ignore silencieusement l'erreur 401 car elle est normale lors d'une déconnexion (purge du store)
+          if (axios.isAxiosError(e) && e.response?.status === 401) return;
           console.error("[Activation] Erreur profil:", e);
         }
       }
@@ -60,10 +62,10 @@ export default function ActivationScreen() {
     if (!userId) initUser();
     
     return () => { ignore = true; };
-  }, [setUserId]); // <-- Loi 3 : Tableau verrouillé pour interdire la boucle
+  }, [setUserId, userId]); // <-- Loi 3 : Tableau verrouillé pour interdire la boucle
 
   /**
-   * RÈGLE D'OR 2 : Vérification du statut de la borne (Prévention amnésie)
+   * 2:Vérification du statut de la borne (Prévention amnésie)
    */
   useEffect(() => {
     let ignore = false;
@@ -125,6 +127,9 @@ export default function ActivationScreen() {
       const finalCost = parseFloat(String(rawCost).replace('€', '').trim()) || 0;
       const finalBalance = parseFloat(String(rawBalance).replace('€', '').trim()) || 0;
 
+      removeSession(plugId);
+      setIsLoading(false);
+
       Alert.alert(
         "Charge terminée",
         `Coût : ${finalCost.toFixed(2)} €\nNouveau solde : ${finalBalance.toFixed(2)} €`,
@@ -133,15 +138,13 @@ export default function ActivationScreen() {
     } catch (error: any) {
       console.log("Le serveur a renvoyé une erreur, mais on nettoie quand même l'UI", error);
       
+      removeSession(plugId);
       if (error.response?.status === 400 || error.response?.status === 404) {
         router.replace('/acceuil');
       } else {
         handleError(error, "Erreur lors de l'arrêt.");
+        setIsLoading(false);
       }
-    } finally {
-      // QUOI QU'IL ARRIVE (Succès ou Erreur), on supprime la prise de l'écran
-      removeSession(plugId);
-      setIsLoading(false);
     }
   };
 

@@ -1,11 +1,13 @@
 import { Ionicons } from '@expo/vector-icons';
+import Constants from 'expo-constants';
+import * as Notifications from 'expo-notifications';
 import { useFocusEffect, useRouter } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, Modal, StyleSheet, Text, TouchableOpacity, View, useColorScheme } from 'react-native';
-import Toast from 'react-native-toast-message';
 
 // L'architecture propre : Services et Store
+import api from '../../services/api';
 import { UserService } from '../../services/userService';
 import { useNotificationStore } from '../../store/useNotificationStore';
 import { UserState, useUserStore } from '../../store/useUserStore';
@@ -20,6 +22,17 @@ const formatNotifDate = (timestamp: number) => {
     minute: '2-digit',
   });
 };
+
+// Indispensable pour voir la notification même si l'appli est ouverte (au premier plan)
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  }),
+});
 
 export default function AccueilScreen() {
   const router = useRouter();
@@ -51,9 +64,17 @@ export default function AccueilScreen() {
   const userNotifications = userId ? (notificationsRecord[userId] || []) : [];
   const unreadCount = userNotifications.filter(n => !n.isRead).length;
 
-  /**
-   * RÈGLE D'OR : Récupération du profil et du solde
-   */
+  //Le filet de sécurité visuel
+  useFocusEffect(
+    useCallback(() => {
+      // Ce code s'exécute à chaque fois que l'écran apparaît à l'utilisateur
+      setIsLoggingOut(false);
+      setIsMenuVisible(false);
+    }, [])
+  );
+
+  //Récupération du profil et du solde
+  
   useFocusEffect(
     useCallback(() => {
       let ignore = false; // Initialisation de la règle d'or
@@ -90,14 +111,95 @@ export default function AccueilScreen() {
       return () => {
         ignore = true; // Nettoyage absolu pour éviter les Memory Leaks
       };
-    }, [setUserId])
+    }, [setUserId, setSolde, setUserName])
   );
+
+  useEffect(() => {
+    // ⚠️  Pattern de nettoyage strict
+    let ignore = false;
+
+    async function registerAndSendPushToken() {
+      try {
+        // 1. Négociation des permissions avec l'OS
+        const { status: existingStatus } = await Notifications.getPermissionsAsync();
+        let finalStatus = existingStatus;
+        
+        if (existingStatus !== 'granted') {
+          const { status } = await Notifications.requestPermissionsAsync();
+          finalStatus = status;
+        }
+
+        // Si refusé, on s'arrête là silencieusement (ou on alerte)
+        if (finalStatus !== 'granted') {
+          if (!ignore) console.log("Permissions Push refusées par l'utilisateur.");
+          return;
+        }
+
+        // 2. Récupération du Token auprès d'EAS avec Retry (Anti-503)
+        const projectId = Constants.expoConfig?.extra?.eas?.projectId || Constants.easConfig?.projectId;
+        let expoToken = null;
+        let retries = 3;
+
+        // VERROU 1 : La boucle doit mourir si le composant est démonté (!ignore)
+        while (retries > 0 && !expoToken && !ignore) {
+          try {
+            const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
+            expoToken = tokenData.data;
+          } catch (expoError: any) {
+            retries -= 1;
+            
+            // Si on a épuisé les essais, on jette l'erreur vers le catch global
+            if (retries === 0) throw expoError; 
+            
+            if (!ignore) console.warn(`⚠️ Serveur Expo indisponible, nouvelle tentative... (${retries} restantes)`);
+            
+            // Pause de 2 secondes
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // VERROU 2 : Si l'utilisateur a quitté l'écran pendant la pause de 2 secondes,
+            // on casse la boucle immédiatement pour ne pas repartir sur un cycle.
+            if (ignore) break;
+          }
+        }
+
+        // VERROU 3 : Protection absolue avant de contacter ton backend.
+        // Si le composant est mort OU qu'on n'a pas pu avoir le token, on stoppe l'exécution de la fonction entière.
+        if (ignore || !expoToken) return;
+
+        // 3. Appel Axios vers la route  (/auth/push-token)
+        // Respect strict du contrat d'API Swagger : { "token": "ExponentPushToken[...]" }
+        const response = await api.post('/auth/push-token', {
+          token: expoToken
+        });
+
+        // 4. Traitement du succès (Uniquement si le composant est toujours monté)
+        if (!ignore) {
+          console.log(`✅ Token Push synchronisé avec succès (Statut: ${response.status})`);
+        }
+
+      } catch (err: any) {
+        // 5. Gestion des erreurs d'infrastructure (ex: 503 Expo) ou 400/500 Backend
+        if (!ignore) {
+          console.warn("⚠️ Échec de la synchronisation du Token Push (Ignoré) :", err?.response?.data || err.message);
+        }
+      }
+    }
+
+    // Déclenchement
+    registerAndSendPushToken();
+
+    // Verrouillage au démontage
+    return () => {
+      ignore = true;
+    };
+  }, []);
 
   const handleLogout = async () => {
     if (isLoggingOut) return;
-    setIsLoggingOut(true); // Verrouille le bouton et affiche le spinner
 
     try {
+      setIsLoggingOut(true);
+      
       // 1. Déconnexion API silencieuse (Fail-safe réseau)
       try {
         // Si tu as un endpoint de déconnexion côté backend, appelle-le ici :
@@ -106,14 +208,19 @@ export default function AccueilScreen() {
         console.warn("L'API de déconnexion est injoignable, on continue le nettoyage local.");
       }
 
-      clearStore(); // 2. Purge intégrale de l'état global AVANT la suppression du token
+      // 1. Purge de la mémoire globale
+      clearStore(); 
       await SecureStore.deleteItemAsync('jwt_token');
+
+      // 2. NETTOYAGE VISUEL  toujours avant la navigation)
+      setIsLoggingOut(false);
       setIsMenuVisible(false);
-      router.replace('/'); // 4. Redirection propre vers la page de connexion
+
+      // 3. Navigation (L'écran s'endormira proprement)
+      router.replace('/'); 
     } catch (error) {
-      Toast.show({ type: 'error', text1: 'Erreur', text2: "Déconnexion impossible.", position: 'top' });
-    } finally {
-      setIsLoggingOut(false); // 5. Règle d'or : On débloque l'UI quoi qu'il arrive !
+      setIsLoggingOut(false);
+      console.error("Erreur de déconnexion :", error);
     }
   };
 
@@ -166,7 +273,7 @@ export default function AccueilScreen() {
         </View>
 
         <View style={styles.balanceContainer}>
-          <Text style={{ fontSize: 34, color: 'white', fontWeight: 'bold', marginBottom: 10 }}>
+          <Text style={{ fontSize: 25, color: 'white', fontWeight: 'bold', marginBottom: 10 }}>
             Bonjour, {userName || 'Étudiant'} 
           </Text>
           <Text style={styles.balanceText}>Solde: {solde.toFixed(2).replace('.', ',')} €</Text>
@@ -237,6 +344,10 @@ export default function AccueilScreen() {
 
             <Text style={[styles.menuTitle, isDark && dynamicStyles.darkText]}>Menu</Text>
 
+             <TouchableOpacity style={styles.menuItem} onPress={() => { setIsMenuVisible(false); router.push('/parametres'); }}>
+              <Text style={[styles.menuText, isDark && dynamicStyles.darkText]}>Paramètres</Text>
+            </TouchableOpacity>
+
             <TouchableOpacity style={styles.menuItem} onPress={() => { setIsMenuVisible(false); router.push('/historique'); }}>
               <Text style={[styles.menuText, isDark && dynamicStyles.darkText]}>Historique de consommation</Text>
             </TouchableOpacity>
@@ -244,6 +355,8 @@ export default function AccueilScreen() {
             <TouchableOpacity style={styles.menuItem} onPress={() => { setIsMenuVisible(false); router.push('/transactions'); }}>
               <Text style={[styles.menuText, isDark && dynamicStyles.darkText]}>Historique des transactions</Text>
             </TouchableOpacity>
+
+        
 
             <TouchableOpacity style={styles.menuItem} onPress={handleLogout} disabled={isLoggingOut}>
               {isLoggingOut ? (
